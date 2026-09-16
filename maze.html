@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>미로 게임</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: #14161c; color: #e8e8ee;
+    font-family: "Malgun Gothic", "맑은 고딕", system-ui, sans-serif;
+    gap: 12px; padding: 16px;
+  }
+  h1 { margin: 0; font-size: 22px; letter-spacing: 1px; }
+  #hud {
+    display: flex; gap: 16px; font-size: 15px; flex-wrap: wrap;
+    justify-content: center;
+    background: #1e212b; padding: 8px 16px; border-radius: 8px;
+  }
+  #hud b { color: #6ee7a8; }
+  #hearts { letter-spacing: 2px; }
+  canvas {
+    background: #1e212b; border-radius: 10px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.5);
+    touch-action: none; max-width: 100%;
+  }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: center; }
+  button, select {
+    background: #2d3140; color: #e8e8ee; border: 1px solid #3c4152;
+    padding: 9px 14px; border-radius: 7px; font-size: 14px; cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { background: #3a3f52; }
+  label { font-size: 14px; color: #b7bdd0; }
+  #msg { font-size: 15px; min-height: 20px; color: #ffd166; text-align: center; }
+  #pad { display: grid; grid-template-columns: repeat(3, 56px); gap: 6px; }
+  #pad button { padding: 14px 0; font-size: 18px; }
+  #pad .sp { visibility: hidden; }
+  small { color: #888ea0; text-align: center; line-height: 1.7; }
+</style>
+</head>
+<body>
+
+<h1>🌀 미로 탈출</h1>
+
+<div class="row">
+  <label for="diff">난이도</label>
+  <select id="diff">
+    <option value="easy">🌱 쉬움</option>
+    <option value="normal" selected>🙂 보통</option>
+    <option value="hard">🔥 어려움</option>
+    <option value="nightmare">💀 악몽</option>
+  </select>
+  <span id="diffInfo" style="font-size:13px;color:#888ea0"></span>
+</div>
+
+<div id="hud">
+  <span>레벨 <b id="level">1</b></span>
+  <span id="hearts">❤️❤️❤️</span>
+  <span>⭐ <b id="stars">0</b></span>
+  <span>🔑 <b id="keyst">0/0</b></span>
+  <span>점수 <b id="score">0</b></span>
+  <span>시간 <b id="time">0</b>초</span>
+</div>
+
+<canvas id="cv" width="520" height="520"></canvas>
+<div id="msg"></div>
+
+<div class="row">
+  <button id="again">새 미로</button>
+  <button id="reset">처음부터</button>
+  <button id="hint">힌트 보기</button>
+</div>
+
+<div id="pad">
+  <button class="sp"></button><button data-d="U">▲</button><button class="sp"></button>
+  <button data-d="L">◀</button><button class="sp"></button><button data-d="R">▶</button>
+  <button class="sp"></button><button data-d="D">▼</button><button class="sp"></button>
+</div>
+
+<small>
+  방향키 · WASD · 아래 버튼으로 이동 &nbsp;|&nbsp; 🔑 열쇠를 모두 모아야 출구가 열립니다<br>
+  ⭐ +10점 &nbsp; 💎 +30점 &nbsp; 💗 하트 회복 &nbsp; 🔥 함정 하트 −1 &nbsp; 👻 추격자에게 잡히면 하트 −1
+</small>
+
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const SIZE = 520;
+const MAX_HEARTS = 6;
+
+/* ---------- 난이도 ---------- */
+const LEVELS = {
+  easy: {
+    name: '쉬움', hearts: 5, grow: 2, maxCols: 20,
+    traps: lv => 1 + lv, chaserFrom: 2, chaserStep: 950,
+    chasers: lv => 1, grace: 3500, keys: lv => Math.min(1 + Math.floor((lv - 1) / 3), 2),
+    desc: '추격자 느림 · 하트 5 · 레벨 2부터 등장'
+  },
+  normal: {
+    name: '보통', hearts: 3, grow: 2, maxCols: 24,
+    traps: lv => 3 + lv * 2, chaserFrom: 1, chaserStep: 620,
+    chasers: lv => (lv >= 5 ? 2 : 1), grace: 2500, keys: lv => Math.min(1 + Math.floor((lv - 1) / 2), 3),
+    desc: '추격자 1마리 · 하트 3 · 레벨 5부터 2마리'
+  },
+  hard: {
+    name: '어려움', hearts: 3, grow: 3, maxCols: 26,
+    traps: lv => 4 + lv * 2, chaserFrom: 1, chaserStep: 430,
+    chasers: lv => (lv >= 3 ? 2 : 1), grace: 1800, keys: lv => Math.min(1 + Math.floor((lv - 1) / 2), 4),
+    desc: '추격자 빠름 · 미로 크게 증가 · 레벨 3부터 2마리'
+  },
+  nightmare: {
+    name: '악몽', hearts: 2, grow: 3, maxCols: 28,
+    traps: lv => 6 + lv * 3, chaserFrom: 1, chaserStep: 300,
+    chasers: lv => Math.min(2 + Math.floor(lv / 3), 4), grace: 1200, keys: lv => Math.min(2 + Math.floor((lv - 1) / 2), 5),
+    desc: '추격자 2마리 이상 · 하트 2 · 함정 다수'
+  }
+};
+let diff = 'normal';
+const D = () => LEVELS[diff];
+
+/* ---------- 상태 ---------- */
+let cols, rows, cells, player, facing = 1;
+let level = 1, score = 0, hearts = 3, stars = 0;
+let items = [], traps = [], chasers = [], keysTotal = 0, keysGot = 0;
+let startTime = 0, timerId = null, finished = false, dead = false;
+let hintPath = null, hurtUntil = 0, graceUntil = 0;
+
+const DIRS = [[0, -1, 0, 2], [1, 0, 1, 3], [0, 1, 2, 0], [-1, 0, 3, 1]];
+const at = (x, y) => (x < 0 || y < 0 || x >= cols || y >= rows) ? null : cells[y * cols + x];
+const keyOf = (x, y) => y * cols + x;
+
+function makeGrid(c, r) {
+  const g = [];
+  for (let y = 0; y < r; y++)
+    for (let x = 0; x < c; x++)
+      g.push({ x, y, walls: [true, true, true, true], visited: false });
+  return g;
+}
+
+// 깊이 우선 탐색으로 미로 생성
+function generate() {
+  cells = makeGrid(cols, rows);
+  const stack = [];
+  let cur = cells[0];
+  cur.visited = true;
+  let seen = 1;
+  while (seen < cells.length) {
+    const next = [];
+    for (const [dx, dy, w, ow] of DIRS) {
+      const n = at(cur.x + dx, cur.y + dy);
+      if (n && !n.visited) next.push([n, w, ow]);
+    }
+    if (next.length) {
+      const [n, w, ow] = next[Math.floor(Math.random() * next.length)];
+      cur.walls[w] = false;
+      n.walls[ow] = false;
+      n.visited = true;
+      seen++;
+      stack.push(cur);
+      cur = n;
+    } else {
+      cur = stack.pop();
+    }
+  }
+}
+
+// 너비 우선 탐색: from 에서 모든 칸까지의 거리 + 직전 칸
+function bfs(from) {
+  const prev = new Map(), dist = new Map();
+  dist.set(from, 0);
+  const q = [from];
+  while (q.length) {
+    const c = q.shift();
+    for (const [dx, dy, w] of DIRS) {
+      if (c.walls[w]) continue;
+      const n = at(c.x + dx, c.y + dy);
+      if (!n || dist.has(n)) continue;
+      dist.set(n, dist.get(c) + 1);
+      prev.set(n, c);
+      q.push(n);
+    }
+  }
+  return { prev, dist };
+}
+
+function pathTo(from, to) {
+  const { prev } = bfs(from);
+  const path = [];
+  for (let c = to; c; c = prev.get(c)) path.push(c);
+  return path.reverse();
+}
+
+// 기준 칸에서 가장 먼 칸 (추격자 리스폰용)
+function farthestFrom(c) {
+  const { dist } = bfs(c);
+  let best = c, bd = -1;
+  for (const [cell, d] of dist) if (d > bd) { bd = d; best = cell; }
+  return best;
+}
+
+function pickCells(n, used) {
+  const out = [];
+  let guard = 0;
+  while (out.length < n && guard++ < 3000) {
+    const c = cells[Math.floor(Math.random() * cells.length)];
+    const k = keyOf(c.x, c.y);
+    if (k === 0 || k === cells.length - 1 || used.has(k)) continue;
+    used.add(k);
+    out.push(c);
+  }
+  return out;
+}
+
+/* ---------- 레벨 구성 ---------- */
+function newMaze(lv) {
+  const d = D();
+  cols = rows = Math.min(8 + (lv - 1) * d.grow, d.maxCols);
+  generate();
+
+  const used = new Set();
+  keysTotal = d.keys(lv);
+  keysGot = 0;
+
+  items = [];
+  for (const c of pickCells(keysTotal, used)) items.push({ x: c.x, y: c.y, type: 'key' });
+  for (const c of pickCells(4 + lv, used)) items.push({ x: c.x, y: c.y, type: 'star' });
+  for (const c of pickCells(Math.max(1, Math.floor(lv / 2)), used)) items.push({ x: c.x, y: c.y, type: 'gem' });
+  if (hearts < MAX_HEARTS)
+    for (const c of pickCells(hearts <= 1 ? 2 : 1, used)) items.push({ x: c.x, y: c.y, type: 'heart' });
+
+  traps = pickCells(d.traps(lv), used).map(c => ({ x: c.x, y: c.y }));
+
+  player = { x: 0, y: 0 };
+  facing = 1;
+  stars = 0;
+  finished = false;
+  dead = false;
+  hintPath = null;
+  hurtUntil = 0;
+
+  // 추격자는 시작점에서 가장 먼 곳에서 출발
+  chasers = [];
+  if (lv >= d.chaserFrom) {
+    const n = d.chasers(lv);
+    const far = farthestFrom(at(0, 0));
+    const spots = [far, at(cols - 1, 0), at(0, rows - 1), at(cols - 1, rows - 1)];
+    for (let i = 0; i < n; i++) spawnChaser(spots[i % spots.length], d.chaserStep + i * 90);
+  }
+
+  startTime = Date.now();
+  graceUntil = startTime + d.grace;
+  clearInterval(timerId);
+  timerId = setInterval(updateHud, 200);
+  document.getElementById('msg').textContent =
+    chasers.length ? '👻 추격자가 ' + (d.grace / 1000) + '초 뒤 움직입니다!' : '';
+  updateHud();
+}
+
+function spawnChaser(cell, step) {
+  chasers.push({ x: cell.x, y: cell.y, px: cell.x, py: cell.y, t0: Date.now(), step });
+}
+
+function restartGame() {
+  level = 1; score = 0; hearts = D().hearts;
+  newMaze(1);
+}
+
+function updateHud() {
+  document.getElementById('level').textContent = level;
+  document.getElementById('stars').textContent = stars;
+  document.getElementById('score').textContent = score;
+  document.getElementById('keyst').textContent = keysGot + '/' + keysTotal;
+  document.getElementById('hearts').textContent =
+    '❤️'.repeat(hearts) + '🖤'.repeat(Math.max(0, D().hearts - hearts));
+  if (!finished && !dead)
+    document.getElementById('time').textContent = Math.floor((Date.now() - startTime) / 1000);
+}
+
+/* ---------- 그리기 ---------- */
+function drawStar(cx, cy, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rad = i % 2 ? r * 0.45 : r;
+    const a = -Math.PI / 2 + i * Math.PI / 5;
+    const px = cx + Math.cos(a) * rad, py = cy + Math.sin(a) * rad;
+    if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawGem(cx, cy, r) {
+  ctx.fillStyle = '#5ad1ff';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r * 0.8, cy);
+  ctx.lineTo(cx, cy + r); ctx.lineTo(cx - r * 0.8, cy);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.55)';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r * 0.8, cy); ctx.lineTo(cx, cy);
+  ctx.closePath(); ctx.fill();
+}
+
+function drawHeart(cx, cy, r) {
+  ctx.fillStyle = '#ff6b8b';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy + r * 0.85);
+  ctx.bezierCurveTo(cx - r * 1.4, cy - r * 0.3, cx - r * 0.5, cy - r * 1.1, cx, cy - r * 0.35);
+  ctx.bezierCurveTo(cx + r * 0.5, cy - r * 1.1, cx + r * 1.4, cy - r * 0.3, cx, cy + r * 0.85);
+  ctx.fill();
+}
+
+function drawKey(cx, cy, r) {
+  ctx.strokeStyle = '#ffd166';
+  ctx.lineWidth = Math.max(1.5, r * 0.3);
+  ctx.beginPath();
+  ctx.arc(cx - r * 0.35, cy, r * 0.45, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx + r * 0.05, cy); ctx.lineTo(cx + r * 0.9, cy);
+  ctx.moveTo(cx + r * 0.9, cy);  ctx.lineTo(cx + r * 0.9, cy + r * 0.45);
+  ctx.moveTo(cx + r * 0.55, cy); ctx.lineTo(cx + r * 0.55, cy + r * 0.4);
+  ctx.stroke();
+}
+
+function drawTrap(cx, cy, r, t) {
+  const w = r * (0.95 + Math.sin(t / 220 + cx) * 0.08);
+  ctx.fillStyle = '#ff7a3d';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - w);
+  ctx.quadraticCurveTo(cx + w * 0.9, cy - w * 0.1, cx + w * 0.45, cy + w * 0.8);
+  ctx.lineTo(cx - w * 0.45, cy + w * 0.8);
+  ctx.quadraticCurveTo(cx - w * 0.9, cy - w * 0.1, cx, cy - w);
+  ctx.fill();
+  ctx.fillStyle = '#ffd166';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - w * 0.25);
+  ctx.quadraticCurveTo(cx + w * 0.4, cy + w * 0.2, cx, cy + w * 0.75);
+  ctx.quadraticCurveTo(cx - w * 0.4, cy + w * 0.2, cx, cy - w * 0.25);
+  ctx.fill();
+}
+
+// 귀여운 주인공
+function drawHero(cx, cy, r, t) {
+  const hurt = Date.now() < hurtUntil;
+  if (hurt && Math.floor(Date.now() / 100) % 2) return;
+  cy += Math.sin(t / 180) * r * 0.06;
+
+  ctx.fillStyle = 'rgba(0,0,0,.35)';
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + r * 0.95, r * 0.7, r * 0.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = hurt ? '#ff8fa3' : '#6ee7a8';
+  for (const s of [-1, 1]) {
+    ctx.beginPath();
+    ctx.ellipse(cx + s * r * 0.6, cy - r * 0.72, r * 0.23, r * 0.36, s * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, r * 0.82, r * 0.78, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(255,120,150,.55)';
+  for (const s of [-1, 1]) {
+    ctx.beginPath();
+    ctx.ellipse(cx + s * r * 0.48, cy + r * 0.2, r * 0.16, r * 0.11, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const look = facing * r * 0.08;
+  ctx.fillStyle = '#1b2430';
+  for (const s of [-1, 1]) {
+    ctx.beginPath();
+    ctx.ellipse(cx + s * r * 0.28 + look, cy - r * 0.12, r * 0.11, r * 0.15, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = '#fff';
+  for (const s of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(cx + s * r * 0.28 + look + r * 0.04, cy - r * 0.18, r * 0.045, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.strokeStyle = '#1b2430';
+  ctx.lineWidth = Math.max(1, r * 0.07);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.arc(cx + look, cy + r * 0.16, r * 0.17, 0.15 * Math.PI, 0.85 * Math.PI);
+  ctx.stroke();
+}
+
+// 추격자 유령
+function drawChaser(cx, cy, r, t, sleeping, dir) {
+  cy += Math.sin(t / 210 + cx) * r * 0.08;
+
+  ctx.globalAlpha = sleeping ? 0.45 : 1;
+  ctx.fillStyle = sleeping ? '#7a6fae' : '#b06ae0';
+
+  // 몸통 + 물결 밑단
+  ctx.beginPath();
+  ctx.arc(cx, cy - r * 0.05, r * 0.78, Math.PI, 0);
+  const b = cy + r * 0.72, w = r * 0.78;
+  ctx.lineTo(cx + w, b);
+  for (let i = 0; i < 3; i++) {
+    const x1 = cx + w - (i * 2 + 1) * w / 3;
+    const x2 = cx + w - (i * 2 + 2) * w / 3;
+    ctx.quadraticCurveTo(x1, b + (i % 2 ? -r * 0.18 : r * 0.22), x2, b);
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  // 눈 (주인공 쪽을 봄)
+  const look = dir * r * 0.12;
+  ctx.fillStyle = '#fff';
+  for (const s of [-1, 1]) {
+    ctx.beginPath();
+    ctx.ellipse(cx + s * r * 0.3 + look, cy - r * 0.15, r * 0.19, r * 0.22, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = '#2a1442';
+  for (const s of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(cx + s * r * 0.3 + look * 1.6, cy - r * 0.13, r * 0.1, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // 입
+  ctx.fillStyle = '#2a1442';
+  ctx.beginPath();
+  if (sleeping) {
+    ctx.ellipse(cx + look, cy + r * 0.32, r * 0.1, r * 0.12, 0, 0, Math.PI * 2);
+  } else {
+    ctx.moveTo(cx - r * 0.2 + look, cy + r * 0.25);
+    ctx.quadraticCurveTo(cx + look, cy + r * 0.55, cx + r * 0.2 + look, cy + r * 0.25);
+    ctx.quadraticCurveTo(cx + look, cy + r * 0.35, cx - r * 0.2 + look, cy + r * 0.25);
+  }
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function drawGoal(cx, cy, r, t) {
+  const open = keysGot >= keysTotal;
+  if (open) {
+    ctx.fillStyle = '#6ee7a8';
+    ctx.globalAlpha = 0.25 + Math.sin(t / 250) * 0.15;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 1.25, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = open ? '#6ee7a8' : '#e2445c';
+  ctx.beginPath();
+  ctx.moveTo(cx - r * 0.6, cy + r * 0.8);
+  ctx.lineTo(cx - r * 0.6, cy - r * 0.2);
+  ctx.quadraticCurveTo(cx, cy - r * 1.1, cx + r * 0.6, cy - r * 0.2);
+  ctx.lineTo(cx + r * 0.6, cy + r * 0.8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#1e212b';
+  if (open) {
+    ctx.beginPath();
+    ctx.arc(cx + r * 0.3, cy + r * 0.25, r * 0.1, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.fillRect(cx - r * 0.22, cy + r * 0.05, r * 0.44, r * 0.4);
+    ctx.strokeStyle = '#1e212b';
+    ctx.lineWidth = Math.max(1.2, r * 0.12);
+    ctx.beginPath();
+    ctx.arc(cx, cy + r * 0.05, r * 0.16, Math.PI, 0);
+    ctx.stroke();
+  }
+}
+
+function draw() {
+  const t = Date.now();
+  const cell = SIZE / cols;
+  const half = cell / 2;
+  ctx.clearRect(0, 0, SIZE, SIZE);
+
+  ctx.fillStyle = 'rgba(110,231,168,.1)';
+  ctx.fillRect(0, 0, cell, cell);
+
+  drawGoal((cols - 1) * cell + half, (rows - 1) * cell + half, cell * 0.36, t);
+
+  if (hintPath) {
+    ctx.strokeStyle = 'rgba(255,209,102,.6)';
+    ctx.lineWidth = Math.max(2, cell * 0.14);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    hintPath.forEach((c, i) => {
+      const px = c.x * cell + half, py = c.y * cell + half;
+      if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+    });
+    ctx.stroke();
+  }
+
+  for (const tr of traps)
+    drawTrap(tr.x * cell + half, tr.y * cell + half, cell * 0.26, t);
+
+  for (const it of items) {
+    const cx = it.x * cell + half;
+    const cy = it.y * cell + half + Math.sin(t / 300 + it.x + it.y) * cell * 0.05;
+    const r = cell * 0.28;
+    if (it.type === 'star') drawStar(cx, cy, r, '#ffd166');
+    else if (it.type === 'gem') drawGem(cx, cy, r);
+    else if (it.type === 'heart') drawHeart(cx, cy, r * 0.9);
+    else drawKey(cx, cy, r);
+  }
+
+  // 벽
+  ctx.strokeStyle = '#7d86a8';
+  ctx.lineWidth = Math.max(1.5, cell * 0.09);
+  ctx.lineCap = 'square';
+  ctx.beginPath();
+  for (const c of cells) {
+    const x = c.x * cell, y = c.y * cell;
+    if (c.walls[0]) { ctx.moveTo(x, y);        ctx.lineTo(x + cell, y); }
+    if (c.walls[1]) { ctx.moveTo(x + cell, y); ctx.lineTo(x + cell, y + cell); }
+    if (c.walls[2]) { ctx.moveTo(x, y + cell); ctx.lineTo(x + cell, y + cell); }
+    if (c.walls[3]) { ctx.moveTo(x, y);        ctx.lineTo(x, y + cell); }
+  }
+  ctx.stroke();
+
+  if (!dead) drawHero(player.x * cell + half, player.y * cell + half, cell * 0.36, t);
+
+  const sleeping = t < graceUntil;
+  for (const ch of chasers) {
+    const p = Math.min(1, (t - ch.t0) / ch.step);
+    const gx = (ch.px + (ch.x - ch.px) * p) * cell + half;
+    const gy = (ch.py + (ch.y - ch.py) * p) * cell + half;
+    drawChaser(gx, gy, cell * 0.36, t, sleeping, Math.sign(player.x - ch.x) || 0);
+  }
+}
+
+/* ---------- 게임 로직 ---------- */
+let flashId = null;
+function flash(text) {
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  clearTimeout(flashId);
+  flashId = setTimeout(() => { if (!finished && !dead) el.textContent = ''; }, 1400);
+}
+
+function gameOver(reason) {
+  dead = true;
+  clearInterval(timerId);
+  document.getElementById('msg').textContent =
+    '💀 ' + reason + ' 최종 점수 ' + score + '점 · 레벨 ' + level + ' — [처음부터]로 다시 도전!';
+  updateHud();
+}
+
+function damage(reason) {
+  if (Date.now() < hurtUntil) return;
+  hearts--;
+  score = Math.max(0, score - 5);
+  hurtUntil = Date.now() + 1200;
+  updateHud();
+  if (hearts <= 0) { gameOver(reason); return; }
+  flash(reason + ' 하트 −1');
+}
+
+function pickup() {
+  const i = items.findIndex(it => it.x === player.x && it.y === player.y);
+  if (i < 0) return;
+  const it = items.splice(i, 1)[0];
+  if (it.type === 'star') { stars++; score += 10; flash('⭐ +10점'); }
+  else if (it.type === 'gem') { score += 30; flash('💎 +30점'); }
+  else if (it.type === 'heart') { hearts = Math.min(MAX_HEARTS, hearts + 1); flash('💗 하트 회복!'); }
+  else {
+    keysGot++;
+    flash(keysGot >= keysTotal
+      ? '🔑 모든 열쇠 획득! 출구가 열렸어요'
+      : '🔑 열쇠 획득 (' + keysGot + '/' + keysTotal + ')');
+  }
+}
+
+function hitTrap() {
+  const i = traps.findIndex(t => t.x === player.x && t.y === player.y);
+  if (i < 0) return;
+  if (Date.now() < hurtUntil) return;
+  traps.splice(i, 1);
+  damage('🔥 함정!');
+}
+
+function checkCaught() {
+  if (dead || finished || Date.now() < graceUntil) return;
+  for (const ch of chasers) {
+    if (ch.x === player.x && ch.y === player.y) {
+      damage('👻 추격자에게 잡혔다!');
+      if (!dead) {
+        // 잡히면 추격자 전원이 멀리 밀려남 + 잠시 정지
+        const far = farthestFrom(at(player.x, player.y));
+        for (const c of chasers) {
+          c.x = c.px = far.x; c.y = c.py = far.y;
+          c.t0 = Date.now();
+        }
+        graceUntil = Date.now() + 1500;
+      }
+      return;
+    }
+  }
+}
+
+function stepChasers(now) {
+  if (dead || finished || now < graceUntil) return;
+  for (const ch of chasers) {
+    if (now - ch.t0 < ch.step) continue;
+    ch.px = ch.x; ch.py = ch.y; ch.t0 = now;
+    const path = pathTo(at(ch.x, ch.y), at(player.x, player.y));
+    if (path.length > 1) { ch.x = path[1].x; ch.y = path[1].y; }
+  }
+  checkCaught();
+}
+
+function move(dir) {
+  if (finished || dead) return;
+  const map = { U: [0, -1, 0], R: [1, 0, 1], D: [0, 1, 2], L: [-1, 0, 3] };
+  const [dx, dy, w] = map[dir];
+  if (dx) facing = dx;
+  const c = at(player.x, player.y);
+  if (c.walls[w]) return;
+  const n = at(player.x + dx, player.y + dy);
+  if (!n) return;
+
+  player = { x: n.x, y: n.y };
+  pickup();
+  hitTrap();
+  if (dead) return;
+  checkCaught();
+  if (dead) return;
+
+  if (player.x === cols - 1 && player.y === rows - 1) {
+    if (keysGot < keysTotal) {
+      flash('🔒 잠겨 있어요! 열쇠 ' + (keysTotal - keysGot) + '개가 더 필요합니다');
+    } else {
+      finished = true;
+      clearInterval(timerId);
+      const sec = Math.floor((Date.now() - startTime) / 1000);
+      const bonus = Math.max(0, 100 - sec * 2);
+      score += 50 + bonus;
+      document.getElementById('msg').textContent =
+        '🎉 레벨 ' + level + ' 클리어! ' + sec + '초 · 보너스 ' + (50 + bonus) +
+        '점 · 총 ' + score + '점 — 3초 뒤 다음 레벨';
+      setTimeout(() => { level++; newMaze(level); }, 3000);
+    }
+  }
+  updateHud();
+}
+
+/* ---------- 입력 ---------- */
+const KEYS = {
+  ArrowUp: 'U', ArrowRight: 'R', ArrowDown: 'D', ArrowLeft: 'L',
+  w: 'U', d: 'R', s: 'D', a: 'L', W: 'U', D: 'R', S: 'D', A: 'L'
+};
+addEventListener('keydown', e => {
+  const dir = KEYS[e.key];
+  if (!dir) return;
+  e.preventDefault();
+  move(dir);
+});
+
+document.getElementById('pad').addEventListener('click', e => {
+  const d = e.target.dataset.d;
+  if (d) move(d);
+});
+
+document.getElementById('again').onclick = () => newMaze(level);
+document.getElementById('reset').onclick = restartGame;
+document.getElementById('hint').onclick = () => {
+  if (dead) return;
+  if (hintPath) { hintPath = null; return; }
+  const here = at(player.x, player.y);
+  const keys = items.filter(it => it.type === 'key');
+  if (keys.length) {
+    let best = null;
+    for (const k of keys) {
+      const p = pathTo(here, at(k.x, k.y));
+      if (!best || p.length < best.length) best = p;
+    }
+    hintPath = best;
+  } else {
+    hintPath = pathTo(here, cells[cells.length - 1]);
+  }
+};
+
+const diffSel = document.getElementById('diff');
+function applyDifficulty(save) {
+  diff = diffSel.value;
+  document.getElementById('diffInfo').textContent = D().desc;
+  if (save) { try { localStorage.setItem('mazeDiff', diff); } catch (e) {} }
+  restartGame();
+}
+diffSel.onchange = () => applyDifficulty(true);
+try {
+  const saved = localStorage.getItem('mazeDiff');
+  if (saved && LEVELS[saved]) diffSel.value = saved;
+} catch (e) {}
+
+// 터치 스와이프
+let t0 = null;
+cv.addEventListener('touchstart', e => { t0 = e.touches[0]; }, { passive: true });
+cv.addEventListener('touchend', e => {
+  if (!t0) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - t0.clientX, dy = t.clientY - t0.clientY;
+  t0 = null;
+  if (Math.hypot(dx, dy) < 24) return;
+  move(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'R' : 'L') : (dy > 0 ? 'D' : 'U'));
+}, { passive: true });
+
+applyDifficulty(false);
+(function loop() {
+  stepChasers(Date.now());
+  draw();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
