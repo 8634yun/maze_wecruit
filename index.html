@@ -83,7 +83,8 @@
 
 <small>
   방향키 · WASD · 아래 버튼으로 이동 &nbsp;|&nbsp; 🔑 열쇠를 모두 모아야 출구가 열립니다<br>
-  ⭐ +10점 &nbsp; 💎 +30점 &nbsp; 💗 하트 회복 &nbsp; 🔥 함정 하트 −1 &nbsp; 👻 추격자에게 잡히면 하트 −1
+  ⭐ +10점 &nbsp; 💎 +30점 &nbsp; 💗 하트 회복 &nbsp; 🔥 함정 하트 −1 &nbsp; 👻 추격자에게 잡히면 하트 −1<br>
+  미로에 갈림길이 있으니 한 바퀴 돌아서 추격자를 따돌리세요
 </small>
 
 <script>
@@ -98,25 +99,29 @@ const LEVELS = {
     name: '쉬움', hearts: 5, grow: 2, maxCols: 20,
     traps: lv => 1 + lv, chaserFrom: 2, chaserStep: 950,
     chasers: lv => 1, grace: 3500, keys: lv => Math.min(1 + Math.floor((lv - 1) / 3), 2),
-    desc: '추격자 느림 · 하트 5 · 레벨 2부터 등장'
+    braid: 1, loops: 0.14,
+    desc: '추격자 느림 · 하트 5 · 갈림길 많음'
   },
   normal: {
     name: '보통', hearts: 3, grow: 2, maxCols: 24,
     traps: lv => 3 + lv * 2, chaserFrom: 1, chaserStep: 620,
     chasers: lv => (lv >= 5 ? 2 : 1), grace: 2500, keys: lv => Math.min(1 + Math.floor((lv - 1) / 2), 3),
+    braid: 0.9, loops: 0.09,
     desc: '추격자 1마리 · 하트 3 · 레벨 5부터 2마리'
   },
   hard: {
     name: '어려움', hearts: 3, grow: 3, maxCols: 26,
     traps: lv => 4 + lv * 2, chaserFrom: 1, chaserStep: 430,
     chasers: lv => (lv >= 3 ? 2 : 1), grace: 1800, keys: lv => Math.min(1 + Math.floor((lv - 1) / 2), 4),
-    desc: '추격자 빠름 · 미로 크게 증가 · 레벨 3부터 2마리'
+    braid: 0.75, loops: 0.06,
+    desc: '추격자 빠름 · 막다른 길 일부 존재'
   },
   nightmare: {
     name: '악몽', hearts: 2, grow: 3, maxCols: 28,
     traps: lv => 6 + lv * 3, chaserFrom: 1, chaserStep: 300,
     chasers: lv => Math.min(2 + Math.floor(lv / 3), 4), grace: 1200, keys: lv => Math.min(2 + Math.floor((lv - 1) / 2), 5),
-    desc: '추격자 2마리 이상 · 하트 2 · 함정 다수'
+    braid: 0.55, loops: 0.04,
+    desc: '추격자 다수 · 하트 2 · 막다른 길 많음'
   }
 };
 let diff = 'normal';
@@ -165,6 +170,74 @@ function generate() {
     } else {
       cur = stack.pop();
     }
+  }
+}
+
+// 벽을 일부 허물어 갈림길(루프)을 만든다.
+// 완전 미로는 두 칸 사이 경로가 하나뿐이라 추격자를 피할 수 없다.
+function braid(deadEndRate, loopRate) {
+  const openWall = c => {
+    const opts = [];
+    for (const [dx, dy, w, ow] of DIRS) {
+      if (!c.walls[w]) continue;
+      const n = at(c.x + dx, c.y + dy);
+      if (n) opts.push([n, w, ow]);
+    }
+    if (!opts.length) return false;
+    const [n, w, ow] = opts[Math.floor(Math.random() * opts.length)];
+    c.walls[w] = false;
+    n.walls[ow] = false;
+    return true;
+  };
+
+  // 1) 막다른 길(열린 방향이 1개인 칸)을 뚫어 통로로 바꾼다
+  for (const c of cells) {
+    if (c.walls.filter(Boolean).length !== 3) continue;
+    if (Math.random() > deadEndRate) continue;
+    openWall(c);
+  }
+  // 2) 추가로 벽을 더 허물어 우회로를 늘린다
+  const extra = Math.floor(cells.length * loopRate);
+  for (let i = 0; i < extra; i++)
+    openWall(cells[Math.floor(Math.random() * cells.length)]);
+}
+
+// 함정을 밟지 않고 목표 칸에 닿을 수 있는지 (함정 칸은 통과 불가로 간주)
+function reachableAvoidingTraps(from, to, blocked) {
+  if (blocked.has(keyOf(to.x, to.y))) return false;
+  const seen = new Set([keyOf(from.x, from.y)]);
+  const q = [from];
+  while (q.length) {
+    const c = q.shift();
+    if (c === to) return true;
+    for (const [dx, dy, w] of DIRS) {
+      if (c.walls[w]) continue;
+      const n = at(c.x + dx, c.y + dy);
+      if (!n) continue;
+      const k = keyOf(n.x, n.y);
+      if (seen.has(k) || blocked.has(k)) continue;
+      seen.add(k);
+      q.push(n);
+    }
+  }
+  return false;
+}
+
+// 열쇠와 출구까지 "함정을 하나도 밟지 않는" 경로가 남도록 함정을 정리한다
+function ensureSafeRoutes() {
+  const start = at(0, 0);
+  const goal = cells[cells.length - 1];
+  const targets = items.filter(it => it.type === 'key').map(it => at(it.x, it.y)).concat([goal]);
+  let guard = 0;
+  while (guard++ < 200) {
+    const blocked = new Set(traps.map(t => keyOf(t.x, t.y)));
+    const bad = targets.find(t => !reachableAvoidingTraps(start, t, blocked));
+    if (!bad) break;
+    // 막고 있는 함정 하나를 제거하고 다시 확인
+    const path = pathTo(start, bad);
+    const i = traps.findIndex(tr => path.some(c => c.x === tr.x && c.y === tr.y));
+    traps.splice(i < 0 ? traps.length - 1 : i, 1);
+    if (!traps.length) break;
   }
 }
 
@@ -220,6 +293,7 @@ function newMaze(lv) {
   const d = D();
   cols = rows = Math.min(8 + (lv - 1) * d.grow, d.maxCols);
   generate();
+  braid(d.braid, d.loops);
 
   const used = new Set();
   keysTotal = d.keys(lv);
@@ -233,6 +307,7 @@ function newMaze(lv) {
     for (const c of pickCells(hearts <= 1 ? 2 : 1, used)) items.push({ x: c.x, y: c.y, type: 'heart' });
 
   traps = pickCells(d.traps(lv), used).map(c => ({ x: c.x, y: c.y }));
+  ensureSafeRoutes();
 
   player = { x: 0, y: 0 };
   facing = 1;
